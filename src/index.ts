@@ -70,7 +70,23 @@ export type {
   McpBridgeSafeChangeAdapterOptions,
 } from "./change/safeChangeAdapter";
 export { registerReconcile } from "./reconcile/registerReconcile";
-export { PRO_CATALOG_TOOL_NAMES } from "./proServer";
+export { registerRecover } from "./recover/registerRecover";
+export {
+  runVpsRecover,
+  defaultRecoverReadReleaseState,
+  VPS_RECOVER_STATUSES,
+  vpsRecoverInputSchema,
+} from "./recover/vpsRecover";
+export type {
+  VpsRecoverStatus,
+  VpsRecoverRunnerOperation,
+  VpsRecoverRunnerResponse,
+  VpsRecoverCatalog,
+  VpsRecoverDeps,
+  VpsRecoverFinding,
+  VpsRecoverPrecheck,
+  VpsRecoverResult,
+} from "./recover/vpsRecover";export { PRO_CATALOG_TOOL_NAMES } from "./proServer";
 export {
   runVpsReconcile,
   defaultReadReleaseState,

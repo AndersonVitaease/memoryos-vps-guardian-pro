@@ -18,12 +18,16 @@ the SAME instances are passed to the public `buildServer()` and to the
 private doctor registration (single shared-adapter composition, no MCP
 tool-to-tool recursion, no new evidence source, no state).
 
-Pro catalog: exactly 13 tools = 10 public Simple Tools + `engineering.vps.doctor`
+Pro catalog: exactly 14 tools = 10 public Simple Tools + `engineering.vps.doctor`
 + `engineering.vps.change.safe` (PLAN + governed EXECUTE of `application.redeploy`
 against an operator-configured target allowlist via
 `MEMORYOS_VPS_GUARDIAN_CHANGE_TARGETS`; PLAN_READY is never approval, never a
 safety guarantee and never execution) + `engineering.vps.reconcile` (read-only
-drift detection).
+drift detection) + `engineering.vps.recover` (controlled official-rollback
+recovery: PLAN read-only, mutates ONLY the fixed official runner rollback over
+the host/operator-injected runner channel; absent channel fails closed with
+zero mutation; 202/queued is never RECOVERED; RECOVERED requires official
+smoke + live catalog + fresh reconcile IN_SYNC).
 
 ## engineering.vps.change.safe
 

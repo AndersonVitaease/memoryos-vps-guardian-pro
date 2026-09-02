@@ -40,6 +40,7 @@ const PRO_TOOL_NAMES = [
   "engineering.vps.doctor",
   "engineering.vps.change.safe",
   "engineering.vps.reconcile",
+  "engineering.vps.recover",
 ].sort();
 
 // ---- deterministic fakes (counting: prove instance sharing and statelessness) ----
@@ -165,7 +166,7 @@ async function withServer(ctx: ProContext): Promise<{ client: Client; close(): P
 }
 
 describe("pro server composition > MCP layer", () => {
-  it("lists exactly 13 tools: ten public Simple Tools plus doctor, change.safe and reconcile", async () => {
+  it("lists exactly 14 tools: ten public Simple Tools plus doctor, change.safe, reconcile and recover", async () => {
     const ctx: ProContext = {
       systemHealthAdapter: counting("sys-fake", healthyHost),
       applicationDeploymentAdapter: null,
@@ -181,10 +182,11 @@ describe("pro server composition > MCP layer", () => {
       expect(names).toEqual(PRO_TOOL_NAMES);
       // The composition's declared catalog equals the LIVE registered tools:
       expect(names).toEqual([...PRO_CATALOG_TOOL_NAMES].sort());
-      expect(listed.tools).toHaveLength(13);
+      expect(listed.tools).toHaveLength(14);
       expect(names).toContain("engineering.vps.doctor");
       expect(names).toContain("engineering.vps.change.safe");
       expect(names).toContain("engineering.vps.reconcile");
+      expect(names).toContain("engineering.vps.recover");
     } finally {
       await close();
     }
@@ -529,7 +531,7 @@ describe("pro server composition > engineering.vps.reconcile (read-only drift de
       expect(parsed.status).toBe("UNKNOWN");
       expect(parsed.findings.some((f) => f.code === "EXPECTED_STATE_INCOMPLETE" && f.severity === "info")).toBe(true);
       expect(parsed.findings.some((f) => f.severity === "critical")).toBe(false);
-      expect(parsed.actual.catalog?.toolCount).toBe(13);
+      expect(parsed.actual.catalog?.toolCount).toBe(14);
       expect(parsed.actual.catalog?.catalogVersion).toBe(PRO_CATALOG_VERSION);
       expect(parsed.actual.catalog?.catalogHash).toMatch(/^[0-9a-f]{64}$/);
       expect(parsed.mutationPerformed).toBe(false);
@@ -546,7 +548,7 @@ describe("pro server composition > engineering.vps.reconcile (read-only drift de
       writeReleaseStateFixture({
         currentRelease: "pro-candidate:fake",
         productionCatalogHash: createProCatalogSnapshot(PRO_CATALOG_TOOL_NAMES).catalogHash,
-        toolCount: 13,
+        toolCount: 14,
         catalogVersion: PRO_CATALOG_VERSION,
         deployStatus: "PASS",
       }),
@@ -607,7 +609,7 @@ describe("pro server composition > engineering.vps.reconcile (read-only drift de
       expect(finding).toBeDefined();
       expect(finding?.severity).toBe("critical");
       expect(finding?.expected).toBe(12);
-      expect(finding?.actual).toBe(13);
+      expect(finding?.actual).toBe(14);
       expect(parsed.mutationPerformed).toBe(false);
     } finally {
       await close();
@@ -635,6 +637,57 @@ describe("pro server composition > engineering.vps.reconcile (read-only drift de
       ]) {
         const call = await client.callTool({ name: "engineering.vps.reconcile", arguments: extra });
         expect(call.isError).toBe(true);
+      }
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe("pro server composition > engineering.vps.recover (controlled official rollback)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("recover via MCP without any evidence or runner channel -> fail-closed UNKNOWN, ZERO mutation, strict input", async () => {
+    const adapter = fakeSafeChangeAdapter();
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: null,
+      dockerHealthAdapter: null,
+      logEvidenceAdapter: null,
+      changeTargets: {},
+      safeChangeAdapter: adapter as unknown as SafeChangeAdapter,
+    };
+    vi.stubEnv(RECONCILE_RELEASE_STATE_FILE_ENV, "");
+    const { client, close } = await withServer(ctx);
+    try {
+      const call = await client.callTool({ name: "engineering.vps.recover", arguments: {} });
+      expect(call.isError).toBeUndefined();
+      const parsed = JSON.parse((call.content as Array<{ text: string }>)[0].text) as {
+        status: string;
+        mutationPerformed: boolean;
+        precheck: { reconcile: { status: string }; blockers: string[] };
+        plan: { action: string; possible: boolean };
+      };
+      // No evidence at all -> reconcile UNKNOWN -> recovery refused (fail-closed).
+      expect(parsed.status).toBe("UNKNOWN");
+      expect(parsed.mutationPerformed).toBe(false);
+      expect(parsed.precheck.reconcile.status).toBe("UNKNOWN");
+      expect(parsed.precheck.blockers).toContain("RECONCILE_UNKNOWN");
+      expect(parsed.plan.action).toBe("rollback");
+      // The mutation boundary is untouched by recover.
+      expect(adapter.calls).toHaveLength(0);
+      // Strict input at the protocol layer.
+      for (const extra of [
+        { toolName: "application-redeploy" },
+        { command: "rm -rf /" },
+        { credential: "secret" },
+        { socket: "/tmp/runner.sock" },
+        { applicationId: "app-9" },
+      ]) {
+        const strict = await client.callTool({ name: "engineering.vps.recover", arguments: extra });
+        expect(strict.isError).toBe(true);
       }
     } finally {
       await close();
