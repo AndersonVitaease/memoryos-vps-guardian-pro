@@ -1,5 +1,6 @@
 /**
- * Pro context: the single composition point for evidence adapters.
+ * Pro context: the single composition point for evidence adapters AND for
+ * the operator-controlled change-target allowlist.
  *
  * Builds (or receives) the operator-controlled evidence adapters EXACTLY ONCE
  * and hands the SAME instances to the public buildServer() composition and to
@@ -14,6 +15,12 @@
  * MEMORYOS_VPS_GUARDIAN_RELEASE_STATE_FILE,
  * MEMORYOS_VPS_GUARDIAN_DOCKER_HEALTH_FILE,
  * MEMORYOS_VPS_GUARDIAN_LOG_EVIDENCE_FILE).
+ *
+ * The change-target allowlist (MEMORYOS_VPS_GUARDIAN_CHANGE_TARGETS) is
+ * operator-configured at construction time: a JSON object mapping logical
+ * target keys to { applicationId, applicationName }. Missing/empty means an
+ * EMPTY allowlist (no change can ever be planned); malformed values throw
+ * loudly. The agent never sees or supplies the resolved identities.
  */
 import {
   createApplicationDeploymentAdapterFromEnvironment,
@@ -25,6 +32,8 @@ import type { SystemHealthAdapter } from "memoryos-vps-guardian/src/adapters/sys
 import type { ApplicationDeploymentAdapter } from "memoryos-vps-guardian/src/adapters/applicationDeployment";
 import type { DockerHealthAdapter } from "memoryos-vps-guardian/src/adapters/dockerHealth";
 import type { LogEvidenceAdapter } from "memoryos-vps-guardian/src/adapters/logEvidence";
+import { CHANGE_TARGETS_ENV_VAR, parseChangeTargets } from "./change/changeSafe";
+import type { ChangeTargets } from "./change/changeSafe";
 
 export interface ProContext {
   /** Local read-only OS evidence (always configured, reused from the public package). */
@@ -32,6 +41,8 @@ export interface ProContext {
   readonly applicationDeploymentAdapter: ApplicationDeploymentAdapter | null;
   readonly dockerHealthAdapter: DockerHealthAdapter | null;
   readonly logEvidenceAdapter: LogEvidenceAdapter | null;
+  /** Operator-configured change-target allowlist (empty = no target may ever be planned). */
+  readonly changeTargets: ChangeTargets;
 }
 
 export function createProContext(
@@ -42,5 +53,6 @@ export function createProContext(
     applicationDeploymentAdapter: createApplicationDeploymentAdapterFromEnvironment(read),
     dockerHealthAdapter: createDockerHealthAdapterFromEnvironment(read),
     logEvidenceAdapter: createLogEvidenceAdapterFromEnvironment(read),
+    changeTargets: parseChangeTargets(read(CHANGE_TARGETS_ENV_VAR)),
   };
 }

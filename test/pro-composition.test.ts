@@ -1,8 +1,9 @@
 /**
  * Pro composition certification: the 10 certified public Simple Tools plus
- * the private engineering.vps.doctor on ONE McpServer with ONE shared adapter
- * wiring. MCP layer exercised through InMemoryTransport (initialize +
- * tools/list + callTool). No real VPS, no network, no I/O.
+ * the private engineering.vps.doctor and the STRICTLY PLAN_ONLY
+ * engineering.vps.change.safe on ONE McpServer with ONE shared adapter and
+ * allowlist wiring. MCP layer exercised through InMemoryTransport (initialize
+ * + tools/list + callTool). No real VPS, no network, no I/O, no mutation.
  */
 import { describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -28,7 +29,7 @@ const PUBLIC_TOOL_NAMES = [
   "engineering.vps.why_down",
 ];
 
-const PRO_TOOL_NAMES = [...PUBLIC_TOOL_NAMES, "engineering.vps.doctor"].sort();
+const PRO_TOOL_NAMES = [...PUBLIC_TOOL_NAMES, "engineering.vps.doctor", "engineering.vps.change.safe"].sort();
 
 // ---- deterministic fakes (counting: prove instance sharing and statelessness) ----
 
@@ -112,20 +113,22 @@ async function withServer(ctx: ProContext): Promise<{ client: Client; close(): P
 }
 
 describe("pro server composition > MCP layer", () => {
-  it("lists exactly 11 tools: the ten certified public Simple Tools plus engineering.vps.doctor", async () => {
+  it("lists exactly 12 tools: ten public Simple Tools plus doctor and PLAN_ONLY change.safe", async () => {
     const ctx: ProContext = {
       systemHealthAdapter: counting("sys-fake", healthyHost),
       applicationDeploymentAdapter: null,
       dockerHealthAdapter: null,
       logEvidenceAdapter: null,
+      changeTargets: {},
     };
     const { client, close } = await withServer(ctx);
     try {
       const listed = await client.listTools();
       const names = listed.tools.map((t) => t.name).sort();
       expect(names).toEqual(PRO_TOOL_NAMES);
-      expect(listed.tools).toHaveLength(11);
+      expect(listed.tools).toHaveLength(12);
       expect(names).toContain("engineering.vps.doctor");
+      expect(names).toContain("engineering.vps.change.safe");
     } finally {
       await close();
     }
@@ -138,6 +141,7 @@ describe("pro server composition > MCP layer", () => {
       applicationDeploymentAdapter: fakes.applicationDeploymentAdapter,
       dockerHealthAdapter: fakes.dockerHealthAdapter,
       logEvidenceAdapter: fakes.logEvidenceAdapter,
+      changeTargets: {},
     };
     const { client, close } = await withServer(ctx);
     try {
@@ -167,6 +171,7 @@ describe("pro server composition > MCP layer", () => {
       applicationDeploymentAdapter: null,
       dockerHealthAdapter: null,
       logEvidenceAdapter: null,
+      changeTargets: {},
     };
     const { client, close } = await withServer(ctx);
     try {
@@ -183,6 +188,7 @@ describe("pro server composition > MCP layer", () => {
       applicationDeploymentAdapter: null,
       dockerHealthAdapter: null,
       logEvidenceAdapter: null,
+      changeTargets: {},
     };
     const { client, close } = await withServer(ctx);
     try {
@@ -217,6 +223,88 @@ describe("pro server composition > MCP layer", () => {
         expect(areaReport?.summary).toBeNull();
         expect(areaReport?.attention).toBe(false);
       }
+    } finally {
+      await close();
+    }
+  });
+
+  it("change.safe plans over the MCP layer: PLAN_READY with allowlist, never executing, no applicationId exposed", async () => {
+    const fakes = fakeAdapters();
+    const ctx: ProContext = {
+      systemHealthAdapter: fakes.systemHealthAdapter,
+      applicationDeploymentAdapter: fakes.applicationDeploymentAdapter,
+      dockerHealthAdapter: fakes.dockerHealthAdapter,
+      logEvidenceAdapter: fakes.logEvidenceAdapter,
+      changeTargets: { gateway: { applicationId: "app-1", applicationName: "Gateway" } },
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      const call = await client.callTool({
+        name: "engineering.vps.change.safe",
+        arguments: { action: "application.redeploy", target: "gateway" },
+      });
+      expect(call.isError).toBeUndefined();
+      const text = (call.content as Array<{ text: string }>)[0].text;
+      const parsed = JSON.parse(text) as {
+        status: string;
+        risk: string;
+        proposalFingerprint: string | null;
+        target: { key: string; applicationName: string | null };
+      };
+      expect(parsed.status).toBe("PLAN_READY");
+      expect(parsed.risk).toBe("REQUIRES_APPROVAL");
+      expect(parsed.proposalFingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(parsed.target).toEqual({ key: "gateway", applicationName: "Gateway" });
+      expect(text).not.toContain("app-1");
+      expect(text).not.toContain("applicationId");
+    } finally {
+      await close();
+    }
+  });
+
+  it("change.safe with an unknown logical target -> BLOCKED at the MCP layer, fingerprint null", async () => {
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: counting("app-fake", healthyApp),
+      dockerHealthAdapter: null,
+      logEvidenceAdapter: null,
+      changeTargets: {},
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      const call = await client.callTool({
+        name: "engineering.vps.change.safe",
+        arguments: { action: "application.redeploy", target: "ghost" },
+      });
+      expect(call.isError).toBeUndefined();
+      const parsed = JSON.parse((call.content as Array<{ text: string }>)[0].text) as {
+        status: string;
+        proposalFingerprint: string | null;
+        prechecks: Array<{ check: string; status: string }>;
+      };
+      expect(parsed.status).toBe("BLOCKED");
+      expect(parsed.proposalFingerprint).toBeNull();
+      expect(parsed.prechecks.find((c) => c.check === "TARGET_CONFIGURED")?.status).toBe("BLOCK");
+    } finally {
+      await close();
+    }
+  });
+
+  it("change.safe rejects extra fields (execute/approval do not exist) at the protocol layer", async () => {
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: null,
+      dockerHealthAdapter: null,
+      logEvidenceAdapter: null,
+      changeTargets: {},
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      const call = await client.callTool({
+        name: "engineering.vps.change.safe",
+        arguments: { action: "application.redeploy", target: "gateway", execute: true },
+      });
+      expect(call.isError).toBe(true);
     } finally {
       await close();
     }
