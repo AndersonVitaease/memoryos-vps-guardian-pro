@@ -3,13 +3,16 @@
  * private Supertools.
  *
  * buildServer() (public) registers the 10 certified free Simple Tools;
- * registerDoctor(), registerChangeSafe() and registerReconcile() (private)
- * add engineering.vps.doctor, the governed engineering.vps.change.safe and
- * the read-only engineering.vps.reconcile onto the SAME McpServer instance
+ * registerDoctor(), registerChangeSafe(), registerReconcile(),
+ * registerRecover() and registerGuardian() (private) add engineering.vps.doctor,
+ * the governed engineering.vps.change.safe, the read-only
+ * engineering.vps.reconcile, the controlled engineering.vps.recover and the
+ * coordinator engineering.vps.guardian onto the SAME McpServer instance
  * with the SAME adapter/allowlist wiring. The result is a single stdio MCP
- * server exposing exactly 13 tools (10 public + doctor + change.safe +
- * reconcile): no placeholders, no plugin framework, no entitlement logic,
- * no mutation primitive, no execution authority outside change.safe.
+ * server exposing exactly 15 tools (10 public + doctor + change.safe +
+ * reconcile + recover + guardian): no placeholders, no plugin framework, no
+ * entitlement logic, no mutation primitive, no execution authority outside
+ * change.safe/recover (which the guardian coordinates).
  *
  * PRO_CATALOG_TOOL_NAMES is the composition's exact registered tool list:
  * the single source consumed by engineering.vps.reconcile's actual-state
@@ -22,6 +25,7 @@ import { registerDoctor } from "./doctor/registerDoctor";
 import { registerChangeSafe } from "./change/registerChangeSafe";
 import { registerReconcile } from "./reconcile/registerReconcile";
 import { registerRecover } from "./recover/registerRecover";
+import { registerGuardian } from "./guardian/registerGuardian";
 import { createProContext } from "./proContext";
 import type { ProContext } from "./proContext";
 
@@ -42,6 +46,7 @@ export const PRO_CATALOG_TOOL_NAMES = [
   "engineering.vps.change.safe",
   "engineering.vps.reconcile",
   "engineering.vps.recover",
+  "engineering.vps.guardian",
 ] as const;
 
 export function buildProServer(ctx: ProContext = createProContext()): McpServer {
@@ -54,5 +59,6 @@ export function buildProServer(ctx: ProContext = createProContext()): McpServer 
   registerChangeSafe(server, ctx);
   registerReconcile(server, PRO_CATALOG_TOOL_NAMES);
   registerRecover(server, PRO_CATALOG_TOOL_NAMES);
+  registerGuardian(server, ctx, PRO_CATALOG_TOOL_NAMES);
   return server;
 }

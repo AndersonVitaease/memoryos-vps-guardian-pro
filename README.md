@@ -4,8 +4,9 @@
 
 Private local foundation that reuses the free, open-source public server
 (`memoryos-vps-guardian`, Apache-2.0, pinned at `v0.1.0`) and adds the
-**private Supertools**: `engineering.vps.doctor`, `engineering.vps.change.safe`
-and `engineering.vps.reconcile`.
+**private Supertools**: `engineering.vps.doctor`, `engineering.vps.change.safe`,
+`engineering.vps.reconcile`, `engineering.vps.recover` and
+`engineering.vps.guardian`.
 
 - Free: the 10 public Simple Tools live in the public repository only.
 - Paid: Supertools live ONLY in this private repository.
@@ -18,7 +19,7 @@ the SAME instances are passed to the public `buildServer()` and to the
 private doctor registration (single shared-adapter composition, no MCP
 tool-to-tool recursion, no new evidence source, no state).
 
-Pro catalog: exactly 14 tools = 10 public Simple Tools + `engineering.vps.doctor`
+Pro catalog: exactly 15 tools = 10 public Simple Tools + `engineering.vps.doctor`
 + `engineering.vps.change.safe` (PLAN + governed EXECUTE of `application.redeploy`
 against an operator-configured target allowlist via
 `MEMORYOS_VPS_GUARDIAN_CHANGE_TARGETS`; PLAN_READY is never approval, never a
@@ -27,7 +28,18 @@ drift detection) + `engineering.vps.recover` (controlled official-rollback
 recovery: PLAN read-only, mutates ONLY the fixed official runner rollback over
 the host/operator-injected runner channel; absent channel fails closed with
 zero mutation; 202/queued is never RECOVERED; RECOVERED requires official
-smoke + live catalog + fresh reconcile IN_SYNC).
+smoke + live catalog + fresh reconcile IN_SYNC) + `engineering.vps.guardian`
+(coordinator/classifier: read-only by default — composes doctor + reconcile,
+plus recover STRICTLY in PLAN mode when reconcile=DRIFTED — and, only with
+execute=true AND approval.approved=true, executes ONLY the deterministically
+recommended action: RECOVER via the recover Supertool (which keeps its own
+gates) or CHANGE_SAFE via the change.safe Supertool (action hardcoded
+`application.redeploy`; applicationId resolved ONLY from Doctor evidence mapped
+against the operator allowlist and bound to a fresh plan fingerprint, so
+approval and TOCTOU are preserved, never bypassed). NONE/INVESTIGATE/BLOCKED/
+UNKNOWN never mutate; after any mutation attempt guardian re-runs doctor +
+reconcile and reports convergence; "action accepted" is never final success.
+The Guardian owns no mutation backend: it coordinates the existing Supertools.
 
 ## engineering.vps.change.safe
 
@@ -107,6 +119,7 @@ npm start        # MCP stdio server (Pro)
 No API, no database, no dashboard, no billing, no login, no remote MCP, no
 entitlement/licensing logic in this stage. The registration points of the
 Supertools (`src/doctor/registerDoctor.ts`, `src/change/registerChangeSafe.ts`,
-`src/reconcile/registerReconcile.ts`) are the single future gate; change.safe
+`src/reconcile/registerReconcile.ts`, `src/recover/registerRecover.ts`,
+`src/guardian/registerGuardian.ts`) are the single future gate; change.safe
 executes only the single allowlisted action through the single
 operator-configured adapter.

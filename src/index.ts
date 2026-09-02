@@ -106,3 +106,13 @@ export type {
   ActualStateSnapshot,
   VpsReconcileDeps,
 } from "./reconcile/vpsReconcile";
+export { registerGuardian } from "./guardian/registerGuardian";
+export {
+  runVpsGuardian,
+  guardianInputSchema,
+} from "./guardian/vpsGuardian";
+export type {
+  VpsGuardianStatus,
+  VpsGuardianRecommendedAction,
+  VpsGuardianDeps,
+} from "./guardian/vpsGuardian";

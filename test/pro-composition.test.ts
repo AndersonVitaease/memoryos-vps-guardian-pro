@@ -41,6 +41,7 @@ const PRO_TOOL_NAMES = [
   "engineering.vps.change.safe",
   "engineering.vps.reconcile",
   "engineering.vps.recover",
+  "engineering.vps.guardian",
 ].sort();
 
 // ---- deterministic fakes (counting: prove instance sharing and statelessness) ----
@@ -166,7 +167,7 @@ async function withServer(ctx: ProContext): Promise<{ client: Client; close(): P
 }
 
 describe("pro server composition > MCP layer", () => {
-  it("lists exactly 14 tools: ten public Simple Tools plus doctor, change.safe, reconcile and recover", async () => {
+  it("lists exactly 15 tools: ten public Simple Tools plus doctor, change.safe, reconcile, recover and guardian", async () => {
     const ctx: ProContext = {
       systemHealthAdapter: counting("sys-fake", healthyHost),
       applicationDeploymentAdapter: null,
@@ -182,11 +183,12 @@ describe("pro server composition > MCP layer", () => {
       expect(names).toEqual(PRO_TOOL_NAMES);
       // The composition's declared catalog equals the LIVE registered tools:
       expect(names).toEqual([...PRO_CATALOG_TOOL_NAMES].sort());
-      expect(listed.tools).toHaveLength(14);
+      expect(listed.tools).toHaveLength(15);
       expect(names).toContain("engineering.vps.doctor");
       expect(names).toContain("engineering.vps.change.safe");
       expect(names).toContain("engineering.vps.reconcile");
       expect(names).toContain("engineering.vps.recover");
+      expect(names).toContain("engineering.vps.guardian");
     } finally {
       await close();
     }
@@ -531,7 +533,7 @@ describe("pro server composition > engineering.vps.reconcile (read-only drift de
       expect(parsed.status).toBe("UNKNOWN");
       expect(parsed.findings.some((f) => f.code === "EXPECTED_STATE_INCOMPLETE" && f.severity === "info")).toBe(true);
       expect(parsed.findings.some((f) => f.severity === "critical")).toBe(false);
-      expect(parsed.actual.catalog?.toolCount).toBe(14);
+      expect(parsed.actual.catalog?.toolCount).toBe(15);
       expect(parsed.actual.catalog?.catalogVersion).toBe(PRO_CATALOG_VERSION);
       expect(parsed.actual.catalog?.catalogHash).toMatch(/^[0-9a-f]{64}$/);
       expect(parsed.mutationPerformed).toBe(false);
@@ -548,7 +550,7 @@ describe("pro server composition > engineering.vps.reconcile (read-only drift de
       writeReleaseStateFixture({
         currentRelease: "pro-candidate:fake",
         productionCatalogHash: createProCatalogSnapshot(PRO_CATALOG_TOOL_NAMES).catalogHash,
-        toolCount: 14,
+        toolCount: 15,
         catalogVersion: PRO_CATALOG_VERSION,
         deployStatus: "PASS",
       }),
@@ -609,7 +611,7 @@ describe("pro server composition > engineering.vps.reconcile (read-only drift de
       expect(finding).toBeDefined();
       expect(finding?.severity).toBe("critical");
       expect(finding?.expected).toBe(12);
-      expect(finding?.actual).toBe(14);
+      expect(finding?.actual).toBe(15);
       expect(parsed.mutationPerformed).toBe(false);
     } finally {
       await close();
@@ -689,6 +691,290 @@ describe("pro server composition > engineering.vps.recover (controlled official 
         const strict = await client.callTool({ name: "engineering.vps.recover", arguments: extra });
         expect(strict.isError).toBe(true);
       }
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe("pro server composition > engineering.vps.guardian (coordinator/classifier)", () => {
+  let dir: string | null = null;
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (dir !== null) {
+      rmSync(dir, { recursive: true, force: true });
+      dir = null;
+    }
+  });
+
+  function writeReleaseStateFixture(over: Record<string, unknown>): string {
+    dir = mkdtempSync(join(tmpdir(), "pro-guardian-"));
+    const file = join(dir, "release-state.json");
+    writeFileSync(file, JSON.stringify(over), "utf8");
+    return file;
+  }
+
+  const inSyncEnv = () => {
+    vi.stubEnv(
+      RECONCILE_RELEASE_STATE_FILE_ENV,
+      writeReleaseStateFixture({
+        currentRelease: "pro-candidate:fake",
+        productionCatalogHash: createProCatalogSnapshot(PRO_CATALOG_TOOL_NAMES).catalogHash,
+        toolCount: 15,
+        catalogVersion: PRO_CATALOG_VERSION,
+        deployStatus: "PASS",
+      }),
+    );
+  };
+
+  it("default {} stays fully read-only: HEALTHY/NONE over healthy evidence + IN_SYNC catalog, ZERO mutation", async () => {
+    inSyncEnv();
+    const adapter = fakeSafeChangeAdapter();
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: counting("app-fake", healthyApp) as unknown as ApplicationDeploymentAdapter,
+      dockerHealthAdapter: counting("docker-fake", healthyDocker),
+      logEvidenceAdapter: null,
+      changeTargets: { gateway: { applicationId: "app-1", applicationName: "Gateway" } },
+      safeChangeAdapter: adapter as unknown as SafeChangeAdapter,
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      const call = await client.callTool({ name: "engineering.vps.guardian", arguments: {} });
+      expect(call.isError).toBeUndefined();
+      const parsed = JSON.parse((call.content as Array<{ text: string }>)[0].text) as {
+        status: string;
+        health: string;
+        drift: string;
+        recommendedAction: string;
+        mode: string;
+        mutationPerformed: boolean;
+        execution?: unknown;
+        validation?: unknown;
+      };
+      expect(parsed.status).toBe("HEALTHY");
+      expect(parsed.health).toBe("HEALTHY");
+      expect(parsed.drift).toBe("IN_SYNC");
+      expect(parsed.recommendedAction).toBe("NONE");
+      expect(parsed.mode).toBe("read-only");
+      expect(parsed.mutationPerformed).toBe(false);
+      expect(parsed.execution).toBeUndefined();
+      expect(parsed.validation).toBeUndefined();
+      // The mutation boundary is untouched in read-only mode.
+      expect(adapter.calls).toHaveLength(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it("strict input at the protocol layer: no arbitrary target/applicationId/command/credential/action/toolName; ZERO mutation", async () => {
+    inSyncEnv();
+    const adapter = fakeSafeChangeAdapter();
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: null,
+      dockerHealthAdapter: null,
+      logEvidenceAdapter: null,
+      changeTargets: { gateway: { applicationId: "app-1", applicationName: "Gateway" } },
+      safeChangeAdapter: adapter as unknown as SafeChangeAdapter,
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      for (const extra of [
+        { target: "gateway" },
+        { target: { applicationId: "app-1" } },
+        { applicationId: "app-1" },
+        { command: "rm -rf /" },
+        { credential: "secret" },
+        { url: "https://backend.example" },
+        { toolName: "application-redeploy" },
+        { action: "application.redeploy" },
+        { approval: { approved: "yes" } },
+      ]) {
+        const call = await client.callTool({ name: "engineering.vps.guardian", arguments: extra });
+        expect(call.isError).toBe(true);
+      }
+      expect(adapter.calls).toHaveLength(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it("execute=true without approval -> execution BLOCKED (authorized=false), ZERO mutation", async () => {
+    inSyncEnv();
+    const adapter = fakeSafeChangeAdapter();
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: counting("app-fake", healthyApp) as unknown as ApplicationDeploymentAdapter,
+      dockerHealthAdapter: counting("docker-fake", healthyDocker),
+      logEvidenceAdapter: null,
+      changeTargets: { gateway: { applicationId: "app-1", applicationName: "Gateway" } },
+      safeChangeAdapter: adapter as unknown as SafeChangeAdapter,
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      const call = await client.callTool({ name: "engineering.vps.guardian", arguments: { execute: true } });
+      expect(call.isError).toBeUndefined();
+      const parsed = JSON.parse((call.content as Array<{ text: string }>)[0].text) as {
+        mode: string;
+        mutationPerformed: boolean;
+        execution: { requested: boolean; authorized: boolean; status: string; performed: boolean };
+        validation?: unknown;
+      };
+      expect(parsed.mode).toBe("execute");
+      expect(parsed.execution.authorized).toBe(false);
+      expect(parsed.execution.status).toBe("BLOCKED");
+      expect(parsed.execution.performed).toBe(false);
+      expect(parsed.mutationPerformed).toBe(false);
+      expect(parsed.validation).toBeUndefined();
+      expect(adapter.calls).toHaveLength(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it("DRIFTED catalog -> reconcile feeds the classification; recover runs STRICTLY in plan-mode {} and BLOCKED (LKG missing), ZERO mutation", async () => {
+    vi.stubEnv(
+      RECONCILE_RELEASE_STATE_FILE_ENV,
+      writeReleaseStateFixture({ toolCount: 12, catalogVersion: PRO_CATALOG_VERSION, deployStatus: "PASS" }),
+    );
+    const adapter = fakeSafeChangeAdapter();
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: null,
+      dockerHealthAdapter: null,
+      logEvidenceAdapter: null,
+      changeTargets: {},
+      safeChangeAdapter: adapter as unknown as SafeChangeAdapter,
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      const call = await client.callTool({ name: "engineering.vps.guardian", arguments: {} });
+      expect(call.isError).toBeUndefined();
+      const parsed = JSON.parse((call.content as Array<{ text: string }>)[0].text) as {
+        status: string;
+        drift: string;
+        recommendedAction: string;
+        reason: string;
+        mode: string;
+        mutationPerformed: boolean;
+        evidence: { recover: { status: string; precheck: { blockers: string[] } } | null };
+      };
+      expect(parsed.status).toBe("DRIFTED");
+      expect(parsed.drift).toBe("DRIFTED");
+      expect(parsed.recommendedAction).toBe("BLOCKED");
+      expect(parsed.reason).toContain("LKG_MISSING");
+      expect(parsed.mode).toBe("read-only");
+      expect(parsed.mutationPerformed).toBe(false);
+      // recover was used CORRECTLY: plan-mode only, with its own blockers exposed.
+      expect(parsed.evidence.recover).not.toBeNull();
+      expect(parsed.evidence.recover?.status).toBe("BLOCKED");
+      expect(parsed.evidence.recover?.precheck.blockers).toContain("LKG_MISSING");
+      expect(adapter.calls).toHaveLength(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it("no expected-state source -> evidence UNKNOWN -> UNKNOWN/BLOCKED, read-only, ZERO mutation", async () => {
+    vi.stubEnv(RECONCILE_RELEASE_STATE_FILE_ENV, "");
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: null,
+      dockerHealthAdapter: null,
+      logEvidenceAdapter: null,
+      changeTargets: {},
+      safeChangeAdapter: null,
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      const call = await client.callTool({ name: "engineering.vps.guardian", arguments: {} });
+      expect(call.isError).toBeUndefined();
+      const parsed = JSON.parse((call.content as Array<{ text: string }>)[0].text) as {
+        status: string;
+        recommendedAction: string;
+        mode: string;
+        mutationPerformed: boolean;
+        execution?: unknown;
+      };
+      expect(parsed.status).toBe("UNKNOWN");
+      expect(parsed.recommendedAction).toBe("BLOCKED");
+      expect(parsed.mode).toBe("read-only");
+      expect(parsed.mutationPerformed).toBe(false);
+      expect(parsed.execution).toBeUndefined();
+    } finally {
+      await close();
+    }
+  });
+
+  it("authorized CHANGE_SAFE delegates to engineering.vps.change.safe (PLAN fingerprint + TOCTOU): one adapter call, Doctor-evidence target, convergence reported", async () => {
+    inSyncEnv();
+    // App evidence script: guardian doctor pass, change.safe PLAN, change.safe
+    // EXECUTE prechecks, change.safe post-validation (new release -> VERIFIED),
+    // guardian post-validation doctor pass.
+    const failedApp: ApplicationDeploymentEvidence = {
+      ...healthyApp,
+      observedAt: "2026-09-02T12:30:00Z",
+      deploymentStatus: "FAILED",
+      applicationHealthy: false,
+      lastDeploymentFinishedAt: "2026-09-02T12:00:00Z",
+    };
+    const app = scriptedAppAdapter([failedApp, failedApp, failedApp, newReleaseApp, failedApp]);
+    const adapter = fakeSafeChangeAdapter();
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: app as unknown as ApplicationDeploymentAdapter,
+      dockerHealthAdapter: counting("docker-fake", healthyDocker),
+      logEvidenceAdapter: null,
+      changeTargets: { gateway: { applicationId: "app-1", applicationName: "Gateway" } },
+      safeChangeAdapter: adapter as unknown as SafeChangeAdapter,
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      const call = await client.callTool({
+        name: "engineering.vps.guardian",
+        arguments: { execute: true, approval: { approved: true } },
+      });
+      expect(call.isError).toBeUndefined();
+      const parsed = JSON.parse((call.content as Array<{ text: string }>)[0].text) as {
+        status: string;
+        recommendedAction: string;
+        mode: string;
+        mutationPerformed: boolean;
+        execution: {
+          action: string | null;
+          status: string;
+          performed: boolean;
+          success: boolean | undefined;
+          target: { applicationId: string } | null;
+          result: { status: string; executed: boolean; mutation: { occurred: boolean; accepted: boolean; correlationKey: string | null } } | null;
+        };
+        validation: { converged: boolean; drift: string; health: string };
+      };
+      // Doctor evidence (DEPLOYMENT FAILED, app observed) + IN_SYNC -> CHANGE_SAFE.
+      expect(parsed.status).toBe("DEGRADED");
+      expect(parsed.recommendedAction).toBe("CHANGE_SAFE");
+      expect(parsed.mode).toBe("execute");
+      expect(parsed.execution.action).toBe("CHANGE_SAFE");
+      expect(parsed.execution.status).toBe("PERFORMED");
+      expect(parsed.execution.performed).toBe(true);
+      expect(parsed.execution.success).toBe(true);
+      // The target came ONLY from Doctor evidence mapped against the operator allowlist.
+      expect(parsed.execution.target).toEqual({ applicationId: "app-1" });
+      expect(parsed.mutationPerformed).toBe(true);
+      // The delegated change.safe result: executed with a confirmed mutation, fingerprint-bound.
+      expect(parsed.execution.result?.status).toBe("VERIFIED");
+      expect(parsed.execution.result?.executed).toBe(true);
+      expect(parsed.execution.result?.mutation.occurred).toBe(true);
+      expect(parsed.execution.result?.mutation.correlationKey).toMatch(/^[0-9a-f]{64}$/);
+      // Post-validation re-ran doctor + reconcile and reported convergence.
+      expect(parsed.validation.converged).toBe(true);
+      expect(parsed.validation.drift).toBe("IN_SYNC");
+      // MUTATION AUTHORITY stays in the Supertool: exactly ONE SafeChangeAdapter
+      // call, made by change.safe, with the operator-resolved target.
+      expect(adapter.calls).toHaveLength(1);
+      expect(adapter.calls[0].resolved).toEqual({ applicationId: "app-1", applicationName: "Gateway" });
     } finally {
       await close();
     }
