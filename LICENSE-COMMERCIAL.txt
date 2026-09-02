@@ -1,0 +1,13 @@
+MemoryOS VPS Guardian Pro — PRIVATE / COMMERCIAL
+Copyright (c) 2026 Anderson Vitaease. All rights reserved.
+
+This repository contains proprietary and confidential software. It is NOT
+open source and it is NOT covered by the Apache-2.0 license that applies to
+the public repository memoryos-vps-guardian.
+
+Unauthorized copying, distribution, modification, publication or use of any
+part of this code, in any form, is prohibited without a separate written
+commercial agreement.
+
+The public dependency "memoryos-vps-guardian" (Apache-2.0) remains governed
+by its own license; its copyright and license notices are preserved.
