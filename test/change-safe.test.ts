@@ -1,5 +1,5 @@
 /**
- * engineering.vps.change.safe V1 (PLAN_ONLY) unit certification.
+ * engineering.vps.change.safe V2 (PLAN + governed EXECUTE) unit certification.
  * Deterministic fakes only: no real VPS, no network, no I/O, no mutation.
  */
 import { describe, expect, it } from "vitest";
@@ -90,6 +90,7 @@ function makeCtx(o: Overrides = {}) {
     dockerHealthAdapter: docker,
     logEvidenceAdapter: null,
     changeTargets: o.changeTargets ?? ALLOWLIST,
+    safeChangeAdapter: null,
   };
   return {
     ctx,
@@ -107,12 +108,17 @@ describe("change.safe input contract (closed, fail-closed)", () => {
     expect(() => planVpsChangeSafe({}, ctx)).toThrowError();
   });
 
-  it("rejects any extra field (no execute/approval/parameters surface exists)", () => {
+  it("rejects any agent-supplied identity, credential or authority field", () => {
     const { ctx } = makeCtx();
-    expect(() => planVpsChangeSafe({ ...input(), execute: true }, ctx)).toThrowError();
-    expect(() => planVpsChangeSafe({ ...input(), approval: { approved: true } }, ctx)).toThrowError();
+    expect(() => planVpsChangeSafe({ ...input(), applicationId: "app-9" }, ctx)).toThrowError();
+    expect(() => planVpsChangeSafe({ ...input(), credential: "x" }, ctx)).toThrowError();
+    expect(() => planVpsChangeSafe({ ...input(), backend: "https://backend.example" }, ctx)).toThrowError();
+    expect(() => planVpsChangeSafe({ ...input(), url: "https://backend.example" }, ctx)).toThrowError();
+    expect(() => planVpsChangeSafe({ ...input(), toolName: "application-deploy" }, ctx)).toThrowError();
     expect(() => planVpsChangeSafe({ ...input(), host: "10.0.0.1" }, ctx)).toThrowError();
     expect(() => planVpsChangeSafe({ ...input(), token: "x" }, ctx)).toThrowError();
+    expect(() => planVpsChangeSafe({ ...input(), command: "rm -rf /" }, ctx)).toThrowError();
+    expect(() => planVpsChangeSafe({ ...input(), ssh: true }, ctx)).toThrowError();
   });
 
   it("rejects an unsupported action", () => {
@@ -271,7 +277,7 @@ describe("output safety and semantics", () => {
     expect(plan.risk).toBe("REQUIRES_APPROVAL");
     expect(plan.limitations).toEqual([...CHANGE_SAFE_LIMITATIONS]);
     expect(CHANGE_SAFE_LIMITATIONS.some((l) => l.includes("it is not approval"))).toBe(true);
-    expect(CHANGE_SAFE_LIMITATIONS.some((l) => l.includes("PLAN_ONLY"))).toBe(true);
+    expect(CHANGE_SAFE_LIMITATIONS.some((l) => l.includes("SafeChangeAdapter"))).toBe(true);
   });
 
   it("never mutates anything: one read-only collect per adapter per call, plan-shaped output only", () => {
@@ -291,7 +297,7 @@ describe("output safety and semantics", () => {
       "status",
       "target",
     ]);
-    expect(plan.limitations).toHaveLength(5);
+    expect(plan.limitations).toHaveLength(7);
   });
 });
 

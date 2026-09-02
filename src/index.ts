@@ -24,14 +24,17 @@ export type {
 } from "./doctor/vpsDoctor";
 export { registerChangeSafe } from "./change/registerChangeSafe";
 export {
+  runVpsChangeSafe,
   planVpsChangeSafe,
   CHANGE_SAFE_ACTION,
   CHANGE_SAFE_CHECKS,
   CHANGE_SAFE_REQUIRED_CHECKS,
   CHANGE_SAFE_LIMITATIONS,
+  CHANGE_SAFE_POST_VALIDATION_STATUSES,
   CHANGE_TARGETS_ENV_VAR,
   parseChangeTargets,
   vpsChangeSafeInputSchema,
+  vpsChangeSafeApprovalSchema,
   vpsChangeSafeOutputSchema,
 } from "./change/changeSafe";
 export type {
@@ -42,4 +45,27 @@ export type {
   ChangeSafePlanStatus,
   ChangeSafeCheckReport,
   ChangeSafePlan,
+  ChangeSafePostValidationStatus,
+  ChangeSafeExecuteStatus,
+  ChangeSafeMutationRecord,
+  ChangeSafePostValidation,
+  ChangeSafeExecuteResult,
 } from "./change/changeSafe";
+export {
+  CHANGE_MUTATION_TOOL,
+  CHANGE_BACKEND_URL_ENV,
+  CHANGE_BACKEND_CREDENTIAL_ENV,
+  CHANGE_BACKEND_SERVER_ID_ENV,
+  CHANGE_BACKEND_SERVER_ID_DEFAULT,
+  createMcpBridgeSafeChangeAdapter,
+  createMcpBridgeCallTransport,
+} from "./change/safeChangeAdapter";
+export type {
+  SafeChangeAdapter,
+  SafeChangeOutcome,
+  SafeChangeTransport,
+  SafeChangeTransportCall,
+  SafeChangeTransportResponse,
+  McpBridgeTransportOptions,
+  McpBridgeSafeChangeAdapterOptions,
+} from "./change/safeChangeAdapter";

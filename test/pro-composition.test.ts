@@ -1,15 +1,16 @@
 /**
  * Pro composition certification: the 10 certified public Simple Tools plus
- * the private engineering.vps.doctor and the STRICTLY PLAN_ONLY
- * engineering.vps.change.safe on ONE McpServer with ONE shared adapter and
- * allowlist wiring. MCP layer exercised through InMemoryTransport (initialize
- * + tools/list + callTool). No real VPS, no network, no I/O, no mutation.
+ * the private engineering.vps.doctor and the governed engineering.vps.change.safe
+ * on ONE McpServer with ONE shared adapter/allowlist/adapter wiring. MCP layer
+ * exercised through InMemoryTransport (initialize + tools/list + callTool).
+ * Deterministic fakes only: no real VPS, no network, no I/O, no mutation.
  */
 import { describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { buildProServer } from "../src/proServer";
 import type { ProContext } from "../src/proContext";
+import type { SafeChangeAdapter, SafeChangeOutcome, ResolvedApplicationTarget } from "../src/index";
 import type { SystemHealthAdapter, VpsHealthEvidence } from "memoryos-vps-guardian/src/adapters/systemHealth";
 import type { ApplicationDeploymentAdapter, ApplicationDeploymentEvidence } from "memoryos-vps-guardian/src/adapters/applicationDeployment";
 import type { DockerHealthAdapter, DockerHealthEvidence } from "memoryos-vps-guardian/src/adapters/dockerHealth";
@@ -45,6 +46,39 @@ function counting<T>(name: string, evidence: T) {
   return adapter;
 }
 
+/** Application evidence adapter returning a scripted sequence of snapshots. */
+function scriptedAppAdapter(snapshots: Array<ApplicationDeploymentEvidence | null>) {
+  let index = 0;
+  return {
+    name: "app-scripted",
+    calls: 0,
+    collect(): ApplicationDeploymentEvidence | null {
+      const evidence = snapshots[Math.min(index, snapshots.length - 1)];
+      index += 1;
+      this.calls += 1;
+      return evidence;
+    },
+  };
+}
+
+/** Deterministic SafeChangeAdapter fake: records calls, never mutates anything real. */
+function fakeSafeChangeAdapter(outcome: Partial<SafeChangeOutcome> = { accepted: true, ref: null, message: "fake accepted" }) {
+  const calls: Array<{ resolved: ResolvedApplicationTarget; correlationKey: string }> = [];
+  const adapter = {
+    name: "fake-safe-change",
+    calls,
+    async redeploy(resolved: ResolvedApplicationTarget, correlationKey: string): Promise<SafeChangeOutcome> {
+      calls.push({ resolved, correlationKey });
+      return {
+        accepted: outcome.accepted ?? true,
+        ref: outcome.ref ?? null,
+        message: outcome.message ?? "fake accepted",
+      };
+    },
+  };
+  return adapter;
+}
+
 const healthyHost: VpsHealthEvidence = {
   uptimeSeconds: 987654,
   cpuCount: 4,
@@ -62,6 +96,14 @@ const healthyApp: ApplicationDeploymentEvidence = {
   currentReleaseId: "r-2",
   previousReleaseId: "r-1",
   lastDeploymentFinishedAt: "2026-09-02T11:00:00Z",
+};
+
+const newReleaseApp: ApplicationDeploymentEvidence = {
+  ...healthyApp,
+  observedAt: "2026-09-02T13:00:00Z",
+  currentReleaseId: "r-3",
+  previousReleaseId: "r-2",
+  lastDeploymentFinishedAt: "2026-09-02T12:59:00Z",
 };
 
 const healthyDocker: DockerHealthEvidence = {
@@ -113,13 +155,14 @@ async function withServer(ctx: ProContext): Promise<{ client: Client; close(): P
 }
 
 describe("pro server composition > MCP layer", () => {
-  it("lists exactly 12 tools: ten public Simple Tools plus doctor and PLAN_ONLY change.safe", async () => {
+  it("lists exactly 12 tools: ten public Simple Tools plus doctor and change.safe", async () => {
     const ctx: ProContext = {
       systemHealthAdapter: counting("sys-fake", healthyHost),
       applicationDeploymentAdapter: null,
       dockerHealthAdapter: null,
       logEvidenceAdapter: null,
       changeTargets: {},
+      safeChangeAdapter: null,
     };
     const { client, close } = await withServer(ctx);
     try {
@@ -142,6 +185,7 @@ describe("pro server composition > MCP layer", () => {
       dockerHealthAdapter: fakes.dockerHealthAdapter,
       logEvidenceAdapter: fakes.logEvidenceAdapter,
       changeTargets: {},
+      safeChangeAdapter: null,
     };
     const { client, close } = await withServer(ctx);
     try {
@@ -172,6 +216,7 @@ describe("pro server composition > MCP layer", () => {
       dockerHealthAdapter: null,
       logEvidenceAdapter: null,
       changeTargets: {},
+      safeChangeAdapter: null,
     };
     const { client, close } = await withServer(ctx);
     try {
@@ -189,6 +234,7 @@ describe("pro server composition > MCP layer", () => {
       dockerHealthAdapter: null,
       logEvidenceAdapter: null,
       changeTargets: {},
+      safeChangeAdapter: null,
     };
     const { client, close } = await withServer(ctx);
     try {
@@ -236,6 +282,7 @@ describe("pro server composition > MCP layer", () => {
       dockerHealthAdapter: fakes.dockerHealthAdapter,
       logEvidenceAdapter: fakes.logEvidenceAdapter,
       changeTargets: { gateway: { applicationId: "app-1", applicationName: "Gateway" } },
+      safeChangeAdapter: null,
     };
     const { client, close } = await withServer(ctx);
     try {
@@ -269,6 +316,7 @@ describe("pro server composition > MCP layer", () => {
       dockerHealthAdapter: null,
       logEvidenceAdapter: null,
       changeTargets: {},
+      safeChangeAdapter: null,
     };
     const { client, close } = await withServer(ctx);
     try {
@@ -290,13 +338,16 @@ describe("pro server composition > MCP layer", () => {
     }
   });
 
-  it("change.safe rejects extra fields (execute/approval do not exist) at the protocol layer", async () => {
+  it("change.safe EXECUTE without approval -> APPROVAL_REQUIRED at the protocol layer with ZERO mutation", async () => {
+    const fakes = fakeAdapters();
+    const adapter = fakeSafeChangeAdapter();
     const ctx: ProContext = {
-      systemHealthAdapter: counting("sys-fake", healthyHost),
-      applicationDeploymentAdapter: null,
-      dockerHealthAdapter: null,
-      logEvidenceAdapter: null,
-      changeTargets: {},
+      systemHealthAdapter: fakes.systemHealthAdapter,
+      applicationDeploymentAdapter: fakes.applicationDeploymentAdapter,
+      dockerHealthAdapter: fakes.dockerHealthAdapter,
+      logEvidenceAdapter: fakes.logEvidenceAdapter,
+      changeTargets: { gateway: { applicationId: "app-1", applicationName: "Gateway" } },
+      safeChangeAdapter: adapter as unknown as SafeChangeAdapter,
     };
     const { client, close } = await withServer(ctx);
     try {
@@ -304,7 +355,118 @@ describe("pro server composition > MCP layer", () => {
         name: "engineering.vps.change.safe",
         arguments: { action: "application.redeploy", target: "gateway", execute: true },
       });
-      expect(call.isError).toBe(true);
+      expect(call.isError).toBeUndefined();
+      const parsed = JSON.parse((call.content as Array<{ text: string }>)[0].text) as {
+        status: string;
+        executed: boolean;
+        reason: string | null;
+        mutation: { attempted: boolean; occurred: boolean; accepted: boolean };
+        rollback: { available: boolean; performed: boolean };
+        proposalFingerprint: string | null;
+      };
+      expect(parsed.status).toBe("APPROVAL_REQUIRED");
+      expect(parsed.executed).toBe(false);
+      expect(parsed.reason).toContain("zero mutation");
+      expect(parsed.mutation).toEqual({ attempted: false, occurred: false, accepted: false, ref: null, correlationKey: null });
+      expect(parsed.rollback).toEqual({ available: false, performed: false });
+      expect(parsed.proposalFingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(adapter.calls).toHaveLength(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it("change.safe rejects agent-supplied applicationId and other authority fields at the protocol layer", async () => {
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: null,
+      dockerHealthAdapter: null,
+      logEvidenceAdapter: null,
+      changeTargets: { gateway: { applicationId: "app-1", applicationName: "Gateway" } },
+      safeChangeAdapter: null,
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      for (const extra of [
+        { applicationId: "app-9" },
+        { credential: "secret" },
+        { url: "https://backend.example" },
+        { toolName: "application-deploy" },
+        { command: "rm -rf /" },
+      ]) {
+        const call = await client.callTool({
+          name: "engineering.vps.change.safe",
+          arguments: { action: "application.redeploy", target: "gateway", ...extra },
+        });
+        expect(call.isError).toBe(true);
+      }
+    } finally {
+      await close();
+    }
+  });
+
+  it("change.safe EXECUTE over the MCP layer: approval bound to the plan fingerprint -> VERIFIED, no applicationId in output", async () => {
+    const app = scriptedAppAdapter([healthyApp, healthyApp, newReleaseApp]);
+    const adapter = fakeSafeChangeAdapter();
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: app as unknown as ApplicationDeploymentAdapter,
+      dockerHealthAdapter: counting("docker-fake", healthyDocker),
+      logEvidenceAdapter: null,
+      changeTargets: { gateway: { applicationId: "app-1", applicationName: "Gateway" } },
+      safeChangeAdapter: adapter as unknown as SafeChangeAdapter,
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      // PLAN first: the fingerprint is the approval anchor.
+      const planCall = await client.callTool({
+        name: "engineering.vps.change.safe",
+        arguments: { action: "application.redeploy", target: "gateway" },
+      });
+      expect(planCall.isError).toBeUndefined();
+      const plan = JSON.parse((planCall.content as Array<{ text: string }>)[0].text) as { status: string; proposalFingerprint: string | null };
+      expect(plan.status).toBe("PLAN_READY");
+      expect(plan.proposalFingerprint).not.toBeNull();
+
+      // EXECUTE with the approved fingerprint: one mutation attempt, then post-validation.
+      const execCall = await client.callTool({
+        name: "engineering.vps.change.safe",
+        arguments: {
+          action: "application.redeploy",
+          target: "gateway",
+          execute: true,
+          approval: { approved: true, proposalFingerprint: plan.proposalFingerprint as string },
+        },
+      });
+      expect(execCall.isError).toBeUndefined();
+      const text = (execCall.content as Array<{ text: string }>)[0].text;
+      const parsed = JSON.parse(text) as {
+        status: string;
+        executed: boolean;
+        mutation: { attempted: boolean; occurred: boolean; accepted: boolean; correlationKey: string | null };
+        postValidation: { status: string; currentReleaseId: string | null } | null;
+        rollback: { available: boolean; performed: boolean };
+        target: { key: string; applicationName: string | null };
+      };
+      expect(parsed.status).toBe("VERIFIED");
+      expect(parsed.executed).toBe(true);
+      expect(parsed.mutation).toEqual({
+        attempted: true,
+        occurred: true,
+        accepted: true,
+        ref: null,
+        correlationKey: plan.proposalFingerprint,
+      });
+      expect(parsed.mutation.correlationKey).toMatch(/^[0-9a-f]{64}$/);
+      expect(parsed.postValidation?.status).toBe("VERIFIED");
+      expect(parsed.postValidation?.currentReleaseId).toBe("r-3");
+      expect(parsed.rollback).toEqual({ available: false, performed: false });
+      // Exactly one mutation call, with the operator-resolved target and the approved fingerprint.
+      expect(adapter.calls).toHaveLength(1);
+      expect(adapter.calls[0].correlationKey).toBe(plan.proposalFingerprint);
+      // Output safety: applicationId never leaks through the MCP layer.
+      expect(text).not.toContain("app-1");
+      expect(text).not.toContain("applicationId");
     } finally {
       await close();
     }
