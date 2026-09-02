@@ -69,3 +69,24 @@ export type {
   McpBridgeTransportOptions,
   McpBridgeSafeChangeAdapterOptions,
 } from "./change/safeChangeAdapter";
+export { registerReconcile } from "./reconcile/registerReconcile";
+export { PRO_CATALOG_TOOL_NAMES } from "./proServer";
+export {
+  runVpsReconcile,
+  defaultReadReleaseState,
+  createProCatalogSnapshot,
+  RECONCILE_RELEASE_STATE_FILE_ENV,
+  PRO_CATALOG_VERSION,
+  vpsReconcileInputSchema,
+  vpsReconcileOutputSchema,
+} from "./reconcile/vpsReconcile";
+export type {
+  ReconcileStatus,
+  ReconcileSeverity,
+  ReconcileFinding,
+  ExpectedStateSnapshot,
+  ActualContainerSnapshot,
+  ActualCatalogSnapshot,
+  ActualStateSnapshot,
+  VpsReconcileDeps,
+} from "./reconcile/vpsReconcile";

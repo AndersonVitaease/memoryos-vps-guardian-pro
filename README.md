@@ -3,8 +3,9 @@
 **Proprietary / commercial — NOT open source.** See `LICENSE-COMMERCIAL.txt`.
 
 Private local foundation that reuses the free, open-source public server
-(`memoryos-vps-guardian`, Apache-2.0, pinned at `v0.1.0`) and adds the first
-**private Supertools**: `engineering.vps.doctor` and `engineering.vps.change.safe`.
+(`memoryos-vps-guardian`, Apache-2.0, pinned at `v0.1.0`) and adds the
+**private Supertools**: `engineering.vps.doctor`, `engineering.vps.change.safe`
+and `engineering.vps.reconcile`.
 
 - Free: the 10 public Simple Tools live in the public repository only.
 - Paid: Supertools live ONLY in this private repository.
@@ -17,11 +18,12 @@ the SAME instances are passed to the public `buildServer()` and to the
 private doctor registration (single shared-adapter composition, no MCP
 tool-to-tool recursion, no new evidence source, no state).
 
-Pro catalog: exactly 12 tools = 10 public Simple Tools + `engineering.vps.doctor`
+Pro catalog: exactly 13 tools = 10 public Simple Tools + `engineering.vps.doctor`
 + `engineering.vps.change.safe` (PLAN + governed EXECUTE of `application.redeploy`
 against an operator-configured target allowlist via
 `MEMORYOS_VPS_GUARDIAN_CHANGE_TARGETS`; PLAN_READY is never approval, never a
-safety guarantee and never execution).
+safety guarantee and never execution) + `engineering.vps.reconcile` (read-only
+drift detection).
 
 ## engineering.vps.change.safe
 
@@ -68,6 +70,27 @@ mutation. Network/mutation authority lives ONLY inside
 `src/change/safeChangeAdapter.ts`; the transport is injectable and tests use
 deterministic fakes (no real VPS/Dokploy).
 
+## engineering.vps.reconcile
+
+READ-ONLY drift detection Supertool (ported from the certified ENG-MCP
+implementation; input is exactly `{}`).
+
+- **EXPECTED state**: exclusively the operator-configured release-state file
+  (`MEMORYOS_VPS_GUARDIAN_RELEASE_STATE_FILE`, the same operator surface used
+  for deployment evidence; read raw, never written). Absent/unreadable means
+  the expected side is simply unavailable.
+- **ACTUAL state**: this server's own tool catalog (SHA-256 over the sorted
+  registered tool names, catalog version `pro-tools-v0.1.0`, actual tool
+  count); container inspection is not injected in this MVP and stays
+  unavailable.
+- **Verdict**: `DRIFTED` (any determined mismatch), `IN_SYNC` (determined
+  matches, none mismatched) or `UNKNOWN` (zero determined comparisons).
+  **Absence of evidence is NEVER drift** — undeterminable comparisons return
+  `UNKNOWN` with info findings, never a mismatch.
+- **Zero mutation**: no execute/approval input exists;
+  `mutationPerformed: false` is structural. No LLM, no SSH/shell, no Dokploy
+  changes, never writes the release-state file.
+
 ## Commands
 
 ```
@@ -79,6 +102,7 @@ npm start        # MCP stdio server (Pro)
 
 No API, no database, no dashboard, no billing, no login, no remote MCP, no
 entitlement/licensing logic in this stage. The registration points of the
-Supertools (`src/doctor/registerDoctor.ts`, `src/change/registerChangeSafe.ts`)
-are the single future gate; change.safe executes only the single allowlisted
-action through the single operator-configured adapter.
+Supertools (`src/doctor/registerDoctor.ts`, `src/change/registerChangeSafe.ts`,
+`src/reconcile/registerReconcile.ts`) are the single future gate; change.safe
+executes only the single allowlisted action through the single
+operator-configured adapter.

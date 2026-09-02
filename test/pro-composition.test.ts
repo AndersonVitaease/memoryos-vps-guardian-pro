@@ -1,14 +1,19 @@
 /**
  * Pro composition certification: the 10 certified public Simple Tools plus
- * the private engineering.vps.doctor and the governed engineering.vps.change.safe
- * on ONE McpServer with ONE shared adapter/allowlist/adapter wiring. MCP layer
- * exercised through InMemoryTransport (initialize + tools/list + callTool).
- * Deterministic fakes only: no real VPS, no network, no I/O, no mutation.
+ * the private engineering.vps.doctor, the governed engineering.vps.change.safe
+ * and the read-only engineering.vps.reconcile on ONE McpServer with ONE shared
+ * adapter/allowlist wiring. MCP layer exercised through InMemoryTransport
+ * (initialize + tools/list + callTool). Deterministic fakes only: no real VPS,
+ * no network, no I/O, no mutation.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { buildProServer } from "../src/proServer";
+import { buildProServer, PRO_CATALOG_TOOL_NAMES } from "../src/proServer";
+import { createProCatalogSnapshot, PRO_CATALOG_VERSION, RECONCILE_RELEASE_STATE_FILE_ENV } from "../src/index";
 import type { ProContext } from "../src/proContext";
 import type { SafeChangeAdapter, SafeChangeOutcome, ResolvedApplicationTarget } from "../src/index";
 import type { SystemHealthAdapter, VpsHealthEvidence } from "memoryos-vps-guardian/src/adapters/systemHealth";
@@ -30,7 +35,12 @@ const PUBLIC_TOOL_NAMES = [
   "engineering.vps.why_down",
 ];
 
-const PRO_TOOL_NAMES = [...PUBLIC_TOOL_NAMES, "engineering.vps.doctor", "engineering.vps.change.safe"].sort();
+const PRO_TOOL_NAMES = [
+  ...PUBLIC_TOOL_NAMES,
+  "engineering.vps.doctor",
+  "engineering.vps.change.safe",
+  "engineering.vps.reconcile",
+].sort();
 
 // ---- deterministic fakes (counting: prove instance sharing and statelessness) ----
 
@@ -155,7 +165,7 @@ async function withServer(ctx: ProContext): Promise<{ client: Client; close(): P
 }
 
 describe("pro server composition > MCP layer", () => {
-  it("lists exactly 12 tools: ten public Simple Tools plus doctor and change.safe", async () => {
+  it("lists exactly 13 tools: ten public Simple Tools plus doctor, change.safe and reconcile", async () => {
     const ctx: ProContext = {
       systemHealthAdapter: counting("sys-fake", healthyHost),
       applicationDeploymentAdapter: null,
@@ -169,9 +179,12 @@ describe("pro server composition > MCP layer", () => {
       const listed = await client.listTools();
       const names = listed.tools.map((t) => t.name).sort();
       expect(names).toEqual(PRO_TOOL_NAMES);
-      expect(listed.tools).toHaveLength(12);
+      // The composition's declared catalog equals the LIVE registered tools:
+      expect(names).toEqual([...PRO_CATALOG_TOOL_NAMES].sort());
+      expect(listed.tools).toHaveLength(13);
       expect(names).toContain("engineering.vps.doctor");
       expect(names).toContain("engineering.vps.change.safe");
+      expect(names).toContain("engineering.vps.reconcile");
     } finally {
       await close();
     }
@@ -467,6 +480,162 @@ describe("pro server composition > MCP layer", () => {
       // Output safety: applicationId never leaks through the MCP layer.
       expect(text).not.toContain("app-1");
       expect(text).not.toContain("applicationId");
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe("pro server composition > engineering.vps.reconcile (read-only drift detection)", () => {
+  let dir: string | null = null;
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (dir !== null) {
+      rmSync(dir, { recursive: true, force: true });
+      dir = null;
+    }
+  });
+
+  function writeReleaseStateFixture(over: Record<string, unknown>): string {
+    dir = mkdtempSync(join(tmpdir(), "pro-reconcile-"));
+    const file = join(dir, "release-state.json");
+    writeFileSync(file, JSON.stringify(over), "utf8");
+    return file;
+  }
+
+  it("no expected-state source configured -> UNKNOWN fail-closed, catalog visible, ZERO mutation", async () => {
+    const adapter = fakeSafeChangeAdapter();
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: null,
+      dockerHealthAdapter: null,
+      logEvidenceAdapter: null,
+      changeTargets: {},
+      safeChangeAdapter: adapter as unknown as SafeChangeAdapter,
+    };
+    vi.stubEnv(RECONCILE_RELEASE_STATE_FILE_ENV, "");
+    const { client, close } = await withServer(ctx);
+    try {
+      const call = await client.callTool({ name: "engineering.vps.reconcile", arguments: {} });
+      expect(call.isError).toBeUndefined();
+      const parsed = JSON.parse((call.content as Array<{ text: string }>)[0].text) as {
+        status: string;
+        findings: Array<{ code: string; severity: string }>;
+        actual: { catalog: { toolCount: number; catalogVersion: string; catalogHash: string } | null; container: unknown };
+        mutationPerformed: boolean;
+      };
+      // Absence of evidence is NEVER drift: expected unavailable + catalog-only -> UNKNOWN.
+      expect(parsed.status).toBe("UNKNOWN");
+      expect(parsed.findings.some((f) => f.code === "EXPECTED_STATE_INCOMPLETE" && f.severity === "info")).toBe(true);
+      expect(parsed.findings.some((f) => f.severity === "critical")).toBe(false);
+      expect(parsed.actual.catalog?.toolCount).toBe(13);
+      expect(parsed.actual.catalog?.catalogVersion).toBe(PRO_CATALOG_VERSION);
+      expect(parsed.actual.catalog?.catalogHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(parsed.mutationPerformed).toBe(false);
+      // The mutation boundary is untouched: reconcile has no execution authority at all.
+      expect(adapter.calls).toHaveLength(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it("release-state fixture in sync -> IN_SYNC over the live Pro catalog", async () => {
+    vi.stubEnv(
+      RECONCILE_RELEASE_STATE_FILE_ENV,
+      writeReleaseStateFixture({
+        currentRelease: "pro-candidate:fake",
+        productionCatalogHash: createProCatalogSnapshot(PRO_CATALOG_TOOL_NAMES).catalogHash,
+        toolCount: 13,
+        catalogVersion: PRO_CATALOG_VERSION,
+        deployStatus: "PASS",
+      }),
+    );
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: null,
+      dockerHealthAdapter: null,
+      logEvidenceAdapter: null,
+      changeTargets: {},
+      safeChangeAdapter: null,
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      const call = await client.callTool({ name: "engineering.vps.reconcile", arguments: {} });
+      expect(call.isError).toBeUndefined();
+      const parsed = JSON.parse((call.content as Array<{ text: string }>)[0].text) as {
+        status: string;
+        findings: Array<{ code: string; severity: string }>;
+        mutationPerformed: boolean;
+      };
+      expect(parsed.status).toBe("IN_SYNC");
+      expect(parsed.findings.some((f) => f.severity === "critical")).toBe(false);
+      expect(parsed.mutationPerformed).toBe(false);
+    } finally {
+      await close();
+    }
+  });
+
+  it("drifted toolCount in release-state -> DRIFTED + TOOL_COUNT_MISMATCH (critical)", async () => {
+    vi.stubEnv(
+      RECONCILE_RELEASE_STATE_FILE_ENV,
+      writeReleaseStateFixture({
+        toolCount: 12,
+        catalogVersion: PRO_CATALOG_VERSION,
+        deployStatus: "PASS",
+      }),
+    );
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: null,
+      dockerHealthAdapter: null,
+      logEvidenceAdapter: null,
+      changeTargets: {},
+      safeChangeAdapter: null,
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      const call = await client.callTool({ name: "engineering.vps.reconcile", arguments: {} });
+      expect(call.isError).toBeUndefined();
+      const parsed = JSON.parse((call.content as Array<{ text: string }>)[0].text) as {
+        status: string;
+        findings: Array<{ code: string; severity: string; expected: number; actual: number }>;
+        mutationPerformed: boolean;
+      };
+      expect(parsed.status).toBe("DRIFTED");
+      const finding = parsed.findings.find((f) => f.code === "TOOL_COUNT_MISMATCH");
+      expect(finding).toBeDefined();
+      expect(finding?.severity).toBe("critical");
+      expect(finding?.expected).toBe(12);
+      expect(finding?.actual).toBe(13);
+      expect(parsed.mutationPerformed).toBe(false);
+    } finally {
+      await close();
+    }
+  });
+
+  it("strict input at the protocol layer: exactly {} (no path, no credential, no URL, no tool selection)", async () => {
+    const ctx: ProContext = {
+      systemHealthAdapter: counting("sys-fake", healthyHost),
+      applicationDeploymentAdapter: null,
+      dockerHealthAdapter: null,
+      logEvidenceAdapter: null,
+      changeTargets: {},
+      safeChangeAdapter: null,
+    };
+    const { client, close } = await withServer(ctx);
+    try {
+      for (const extra of [
+        { path: "C:/secret" },
+        { credential: "secret" },
+        { url: "https://backend.example" },
+        { toolName: "application-redeploy" },
+        { command: "rm -rf /" },
+        { applicationId: "app-9" },
+      ]) {
+        const call = await client.callTool({ name: "engineering.vps.reconcile", arguments: extra });
+        expect(call.isError).toBe(true);
+      }
     } finally {
       await close();
     }
