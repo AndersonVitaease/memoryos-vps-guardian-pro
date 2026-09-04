@@ -1,111 +1,112 @@
-# MemoryOS VPS Guardian Pro (PRIVATE)
+# VPS Guardian
 
-**Proprietary / commercial — NOT open source.** See `LICENSE-COMMERCIAL.txt`.
+Give AI agents VPS deployment capabilities without giving them unrestricted infrastructure authority.
 
-Private local foundation that reuses the free, open-source public server
-(`memoryos-vps-guardian`, Apache-2.0, pinned at `v0.1.0`) and adds the
-**private Supertools**: `engineering.vps.doctor`, `engineering.vps.change.safe`,
-`engineering.vps.reconcile`, `engineering.vps.recover` and
-`engineering.vps.guardian`.
+VPS Guardian is a safe execution layer for AI-agent VPS operations: bounded authority, state-bound execution and evidence-based outcomes — built as a domain proof for [Guardian Core v0.1.0](https://github.com/AndersonVitaease/memoryos-guardian-core).
 
-- Free: the 10 public Simple Tools live in the public repository only.
-- Paid: Supertools live ONLY in this private repository.
-- The public repository never contains, references or depends on this code.
+## The problem
 
-## Composition
+An AI agent may need to redeploy one application.
 
-`createProContext()` builds the operator-controlled evidence adapters ONCE;
-the SAME instances are passed to the public `buildServer()` and to the
-private doctor registration (single shared-adapter composition, no MCP
-tool-to-tool recursion, no new evidence source, no state).
+That does not mean it should receive unrestricted shell, SSH, Docker or VPS authority. Unrestricted infrastructure authority creates a much larger authority surface than the task requires — and it fails in familiar ways:
 
-Pro catalog: exactly 15 tools = 10 public Simple Tools + `engineering.vps.doctor`
-+ `engineering.vps.change.safe` (PLAN + governed EXECUTE of `application.redeploy`
-against an operator-configured target allowlist via
-`MEMORYOS_VPS_GUARDIAN_CHANGE_TARGETS`; PLAN_READY is never approval, never a
-safety guarantee and never execution) + `engineering.vps.reconcile` (read-only
-drift detection) + `engineering.vps.recover` (controlled official-rollback
-recovery: PLAN read-only, mutates ONLY the fixed official runner rollback over
-the host/operator-injected runner channel; absent channel fails closed with
-zero mutation; 202/queued is never RECOVERED; RECOVERED requires official
-smoke + live catalog + fresh reconcile IN_SYNC) + `engineering.vps.guardian`
-(coordinator/classifier: read-only by default — composes doctor + reconcile,
-plus recover STRICTLY in PLAN mode when reconcile=DRIFTED — and, only with
-execute=true AND approval.approved=true, executes ONLY the deterministically
-recommended action: RECOVER via the recover Supertool (which keeps its own
-gates) or CHANGE_SAFE via the change.safe Supertool (action hardcoded
-`application.redeploy`; applicationId resolved ONLY from Doctor evidence mapped
-against the operator allowlist and bound to a fresh plan fingerprint, so
-approval and TOCTOU are preserved, never bypassed). NONE/INVESTIGATE/BLOCKED/
-UNKNOWN never mutate; after any mutation attempt guardian re-runs doctor +
-reconcile and reports convergence; "action accepted" is never final success.
-The Guardian owns no mutation backend: it coordinates the existing Supertools.
+- the **wrong target** is deployed to (the agent picks a plausible name, not the authorized one);
+- the **state changed** between the agent's decision and its execution (stale decision over new state);
+- a **deployment is already in progress** for the same application;
+- the backend **accepts the request but the deployment never verifies** — acceptance is not success;
+- a **retry** after an ambiguous outcome dispatches a second mutation nobody can account for;
+- **two concurrent decisions** for the same target both pass validation and both dispatch.
 
-## engineering.vps.change.safe
+VPS Guardian explores a narrower model:
 
-Two modes over one strict input
-`{ action: 'application.redeploy', target: string, execute?: boolean, approval?: { approved: boolean, proposalFingerprint: string } }`
-(unknown fields are rejected; the agent never supplies an applicationId,
-credential, backend URL, host, IP, command, shell, SSH or tool selection).
+```
+intent → eligibility → state observation → approval/state binding
+      → controlled execution → independent post-validation
+      → evidence-based result
+```
 
-- **PLAN** (default): `{ action, target }` resolves the logical target ONLY
-  against the operator allowlist, collects existing read-only evidence, runs
-  deterministic prechecks and returns `PLAN_READY | BLOCKED | UNKNOWN` with
-  fixed risk `REQUIRES_APPROVAL` and a deterministic SHA-256
-  `proposalFingerprint` (output only; it authorizes nothing).
-- **EXECUTE** (`execute: true`): requires
-  `approval: { approved: true, proposalFingerprint }`. Before ANY mutation the
-  tool re-resolves the target, re-collects fresh evidence, re-runs the same
-  prechecks, recomputes the fingerprint and compares it with
-  `approval.proposalFingerprint` (TOCTOU binding): a mismatch returns
-  `SNAPSHOT_CHANGED` and absent/not-granted approval returns
-  `APPROVAL_REQUIRED` — both with ZERO mutation. Only then does it perform
-  exactly ONE mutation attempt through the operator-configured
-  `SafeChangeAdapter` (single capability `application-redeploy`; no retry, no
-  auto-recovery, no polling), followed by mandatory read-only post-validation
-  reported as `VERIFIED | FAILED | PENDING | UNKNOWN_REQUIRES_HUMAN_REVIEW`.
-  Backend acceptance is NEVER treated as success. Rollback is not available:
-  `rollback.available=false` and `rollback.performed=false` always.
+## What VPS Guardian does
 
-Authority stays with the operator configuration: approval binds a plan, it
-does not create authority. `proposalFingerprint` is a local correlation/action
-key; backend idempotency is not claimed.
+One governed operation — `application.redeploy` — behind one strict input schema:
 
-### Operator configuration (construction time; never agent input)
+```
+Intent
+  ↓  authorized target resolution (operator allowlist only — the agent never supplies an applicationId, credential, URL, host or shell)
+  ↓  deterministic prechecks on fresh read-only evidence
+  ↓  proposal / evidence snapshot
+  ↓  SHA-256 proposal fingerprint
+  ↓  approval bound to that fingerprint
+  ↓  fresh revalidation: re-resolve, re-collect, re-check, recompute fingerprint (mismatch → SNAPSHOT_CHANGED, zero mutation)
+  ↓  controlled mutation: exactly ONE attempt, no unsafe automatic retry
+  ↓  fresh post-validation (independent observation)
+  ↓  VERIFIED / FAILED / PENDING / UNKNOWN_REQUIRES_HUMAN_REVIEW
+```
 
-| Variable | Meaning |
-| --- | --- |
-| `MEMORYOS_VPS_GUARDIAN_CHANGE_TARGETS` | JSON allowlist `{ logicalKey: { applicationId, applicationName } }`; missing/empty = no target may ever be planned |
-| `MEMORYOS_VPS_GUARDIAN_CHANGE_BACKEND_URL` | Change backend endpoint for the `SafeChangeAdapter` (agentMemoryBridge) |
-| `MEMORYOS_VPS_GUARDIAN_CHANGE_CREDENTIAL` | Change backend credential (sent as `x-agent-memory-token`; never logged, never output) |
-| `MEMORYOS_VPS_GUARDIAN_CHANGE_SERVER_ID` | Optional backend serverId (fixed default) |
+- **acceptance ≠ success**: backend acceptance is never treated as a successful deployment.
+- **VERIFIED requires postcondition evidence** from a fresh observation.
+- **UNKNOWN stays UNKNOWN** when evidence is insufficient — never guessed, never retried automatically.
 
-URL and credential must be configured together or both absent; absent means
-NO mutation capability exists and every EXECUTE fails closed with zero
-mutation. Network/mutation authority lives ONLY inside
-`src/change/safeChangeAdapter.ts`; the transport is injectable and tests use
-deterministic fakes (no real VPS/Dokploy).
+## Why not just give the agent SSH?
 
-## engineering.vps.reconcile
+SSH/shell grants a broad, general-purpose execution surface. For agentic automation of *specific* operations, exposing narrow governed operations instead of machine authority can be preferable: the agent can do the task but cannot do everything else. SSH is not always wrong — unrestricted authority for narrow tasks is a trade worth questioning.
 
-READ-ONLY drift detection Supertool (ported from the certified ENG-MCP
-implementation; input is exactly `{}`).
+## Safety properties demonstrated
 
-- **EXPECTED state**: exclusively the operator-configured release-state file
-  (`MEMORYOS_VPS_GUARDIAN_RELEASE_STATE_FILE`, the same operator surface used
-  for deployment evidence; read raw, never written). Absent/unreadable means
-  the expected side is simply unavailable.
-- **ACTUAL state**: this server's own tool catalog (SHA-256 over the sorted
-  registered tool names, catalog version `pro-tools-v0.1.0`, actual tool
-  count); container inspection is not injected in this MVP and stays
-  unavailable.
-- **Verdict**: `DRIFTED` (any determined mismatch), `IN_SYNC` (determined
-  matches, none mismatched) or `UNKNOWN` (zero determined comparisons).
-  **Absence of evidence is NEVER drift** — undeterminable comparisons return
-  `UNKNOWN` with info findings, never a mismatch.
-- **Zero mutation**: no execute/approval input exists;
-  `mutationPerformed: false` is structural. No LLM, no SSH/shell, no Dokploy
-  changes, never writes the release-state file.
+- operator-controlled target allowlist (missing/empty = no target may ever be planned);
+- fail-closed eligibility (absent approval, absent backend capability → zero mutation);
+- proposal fingerprint bound to observed evidence; stale decision refusal (`SNAPSHOT_CHANGED`, zero mutation);
+- fresh revalidation before any mutation (TOCTOU binding);
+- one mutation attempt, no unsafe automatic retry, no auto-recovery;
+- independent post-validation; VERIFIED only from evidence; explicit UNKNOWN/indeterminacy;
+- same-instance (same process) concurrent redeploy protection for the same resolved applicationId (GC-08C).
+
+**Same-instance only** — see [Concurrency](#concurrency).
+
+## Concurrency
+
+Initial red-team testing proved that fingerprint/state revalidation protects stale decisions but did **NOT** protect two simultaneously compatible decisions. GC-08B reproduced duplicate mutation dispatch for overlapping executions against the same target. GC-08C added a keyed in-memory reservation by resolved `applicationId` (synchronous check+add, mandatory release in `finally`).
+
+Current guarantee: **same process + same resolved applicationId + overlapping executions → at most one crosses the redeploy dispatch boundary.** The loser is refused before the mutation boundary with zero mutation (`NOT_EXECUTED`-equivalent). Different applicationIds never block each other.
+
+Current non-guarantees (explicitly): no cross-process serialization, no cross-machine serialization, no distributed lock, no exactly-once execution, no backend-native idempotency.
+
+## Example behavior
+
+Agent asks: *"Redeploy Gateway"*
+
+1. Guardian resolves `Gateway → app-1` — only if the operator allowlist contains it.
+2. Before any mutation it asks: current state safe? Is the approval valid for this exact snapshot? Is state still compatible? Is another same-instance redeploy for `app-1` already executing?
+3. Only then may the single controlled redeploy execute.
+4. Afterward: "backend accepted the request" ≠ "deployment verified" — a fresh observation is required for `VERIFIED`.
+
+## Architecture relationship
+
+- **VPS Guardian** = domain implementation / proof (Dokploy-style VPS operations).
+- **[Guardian Core](https://github.com/AndersonVitaease/memoryos-guardian-core)** = domain-agnostic execution contract (`intent → bind → apply → evidence-based result`), released as **v0.1.0**.
+
+Guardian Core is experimental; this domain proof is how its contract was validated for VPS operations.
+
+## Evidence
+
+- **179/179 tests passing** (165 baseline + 14 added for the GC-08C concurrency hardening).
+- **GC-08B**: adversarial red-team reproduction of the simultaneous same-target collision (duplicate dispatch).
+- **GC-08C**: same-instance/same-`applicationId` concurrency protection added and regression-tested (deterministic, timer-free concurrency tests).
+- Stale-decision protection (`SNAPSHOT_CHANGED`) demonstrated by scripted bind/apply drift tests.
+
+Tested and demonstrated — not formally proven.
+
+## Known limitations
+
+- experimental; not production-certified;
+- same-instance concurrency protection only — no cross-process or cross-machine lock;
+- no exactly-once; no backend idempotency claim;
+- backend-specific (Dokploy) semantics not fully characterized by real concurrent production testing;
+- `NO_DEPLOYMENT_IN_FLIGHT` depends on visible backend evidence;
+- adapter/domain trust assumptions; no malicious-adapter guarantee (inherited from Guardian Core where relevant).
+
+## Status
+
+Experimental / research implementation. Guardian Core: v0.1.0. VPS Guardian: current proof implementation (no separate semantic version claimed).
 
 ## Commands
 
@@ -113,13 +114,7 @@ implementation; input is exactly `{}`).
 npm install
 npm run typecheck
 npm test
-npm start        # MCP stdio server (Pro)
+npm start        # MCP stdio server
 ```
 
-No API, no database, no dashboard, no billing, no login, no remote MCP, no
-entitlement/licensing logic in this stage. The registration points of the
-Supertools (`src/doctor/registerDoctor.ts`, `src/change/registerChangeSafe.ts`,
-`src/reconcile/registerReconcile.ts`, `src/recover/registerRecover.ts`,
-`src/guardian/registerGuardian.ts`) are the single future gate; change.safe
-executes only the single allowlisted action through the single
-operator-configured adapter.
+Explore Guardian Core: <https://github.com/AndersonVitaease/memoryos-guardian-core>
