@@ -297,7 +297,10 @@ describe("output safety and semantics", () => {
       "status",
       "target",
     ]);
-    expect(plan.limitations).toHaveLength(7);
+    expect(plan.limitations).toHaveLength(8);
+    expect(
+      CHANGE_SAFE_LIMITATIONS.some((l) => l.includes("GC-08C single-flight") && l.includes("same-instance (same process) protection only")),
+    ).toBe(true);
   });
 });
 

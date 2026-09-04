@@ -239,6 +239,7 @@ export const CHANGE_SAFE_LIMITATIONS: readonly string[] = [
   "Rollback is not available in this version: every result reports rollback.available=false and rollback.performed=false, and nothing is ever automatically reverted.",
   "proposalFingerprint is a local correlation/action key; backend idempotency is NOT claimed.",
   "APPLICATION_HEALTH and DOCKER_HEALTH are observational checks; they never gate the plan or execution and are never read as authority.",
+  "GC-08C single-flight: while one EXECUTE for a resolved application identifier is in flight on this instance, concurrent EXECUTE calls for the SAME resolved identifier are refused (BLOCKED, zero mutation) before the mutation boundary; different application identifiers never block each other. This is same-instance (same process) protection only: cross-process and cross-machine concurrency are NOT serialized, no distributed lock or persistence exists, and backend idempotency is NOT claimed.",
 ];
 
 const changeSafeCheckReportSchema = z
@@ -646,48 +647,118 @@ function noMutation(correlationKey: string | null): ChangeSafeMutationRecord {
   return { attempted: false, occurred: false, accepted: false, ref: null, correlationKey };
 }
 
+/**
+ * GC-08C single-flight reservation for the governed EXECUTE path.
+ * Keyed by the RESOLVED applicationId (never by the caller-supplied logical
+ * target name): while one EXECUTE for an applicationId is in flight on THIS
+ * instance, concurrent EXECUTE calls for the SAME applicationId are refused
+ * before the mutation boundary; different applicationIds never block each
+ * other. Same-process scope only: no distributed lock, no persistence, no
+ * cross-process/cross-machine serialization; backend idempotency NOT claimed.
+ */
+const inFlightApplicationIds = new Set<string>();
+
+/** Shared EXECUTE result builder (previously the `finish` closure). */
+function finishExecuteResult(
+  assessment: ChangeSafetyAssessment,
+  startedAt: number,
+  partial: {
+    status: ChangeSafeExecuteStatus;
+    executed: boolean;
+    reason: string | null;
+    mutation: ChangeSafeMutationRecord;
+    postValidation: ChangeSafePostValidation | null;
+  },
+): ChangeSafeExecuteResult {
+  const durationMs = Date.now() - startedAt;
+  // Metadata-only audit: no applicationId, no URL, no credential, no shell.
+  console.log(
+    JSON.stringify({
+      event: "engineering.vps.change.safe",
+      mode: "EXECUTE",
+      action: CHANGE_SAFE_ACTION,
+      targetKey: assessment.targetKey,
+      status: partial.status,
+      executed: partial.executed,
+      mutationAttempted: partial.mutation.attempted,
+      mutationAccepted: partial.mutation.accepted,
+      correlationKey: assessment.proposalFingerprint,
+      durationMs,
+    }),
+  );
+  // Keys are inserted in sorted order for deterministic serialized output.
+  return {
+    action: CHANGE_SAFE_ACTION,
+    executed: partial.executed,
+    limitations: CHANGE_SAFE_LIMITATIONS,
+    mutation: partial.mutation,
+    postValidation: partial.postValidation,
+    prechecks: assessment.prechecks,
+    proposalFingerprint: assessment.proposalFingerprint,
+    reason: partial.reason,
+    risk: "REQUIRES_APPROVAL",
+    rollback: { available: false, performed: false },
+    status: partial.status,
+    target: planTarget(assessment.resolved, assessment.targetKey),
+  };
+}
+
+/**
+ * Refusal for a concurrently executing SAME resolved applicationId. Existing
+ * domain vocabulary is reused (status BLOCKED, executed=false, zero mutation,
+ * postValidation=null). The ONLY new vocabulary is the reason marker
+ * SIMULTANEOUS_EXECUTION_FOR_SAME_APPLICATION_ID_IN_FLIGHT, needed so callers
+ * and tests can distinguish this refusal from evidence-based BLOCK results.
+ */
+function buildSimultaneousExecutionRefusal(
+  assessment: ChangeSafetyAssessment,
+  startedAt: number,
+): ChangeSafeExecuteResult {
+  return finishExecuteResult(assessment, startedAt, {
+    status: "BLOCKED",
+    executed: false,
+    reason:
+      "SIMULTANEOUS_EXECUTION_FOR_SAME_APPLICATION_IDENTIFIER_IN_FLIGHT: another execution on this instance already holds the single-flight reservation for the same resolved application identifier; the concurrent execution is refused before the mutation boundary; zero mutation performed",
+    mutation: noMutation(null),
+    postValidation: null,
+  });
+}
+
 async function executeVpsChangeSafe(args: VpsChangeSafeInput, ctx: ProContext): Promise<ChangeSafeExecuteResult> {
   const startedAt = Date.now();
   const assessment = assessChangeSafety(args.target, ctx);
+  // Synchronous check+add with NO await in between: atomic on this instance.
+  // Key = RESOLVED applicationId (operator allowlist), never the caller key.
+  const reservationKey = assessment.resolved === null ? null : assessment.resolved.applicationId;
+  if (reservationKey !== null && inFlightApplicationIds.has(reservationKey)) {
+    return buildSimultaneousExecutionRefusal(assessment, startedAt);
+  }
+  if (reservationKey !== null) {
+    inFlightApplicationIds.add(reservationKey);
+  }
+  try {
+    return await executeVpsChangeSafeGated(args, ctx, assessment, startedAt);
+  } finally {
+    // Mandatory release on EVERY path (refusal, upstream error, throw, success).
+    if (reservationKey !== null) {
+      inFlightApplicationIds.delete(reservationKey);
+    }
+  }
+}
+
+async function executeVpsChangeSafeGated(
+  args: VpsChangeSafeInput,
+  ctx: ProContext,
+  assessment: ChangeSafetyAssessment,
+  startedAt: number,
+): Promise<ChangeSafeExecuteResult> {
   const finish = (partial: {
     status: ChangeSafeExecuteStatus;
     executed: boolean;
     reason: string | null;
     mutation: ChangeSafeMutationRecord;
     postValidation: ChangeSafePostValidation | null;
-  }): ChangeSafeExecuteResult => {
-    const durationMs = Date.now() - startedAt;
-    // Metadata-only audit: no applicationId, no URL, no credential, no shell.
-    console.log(
-      JSON.stringify({
-        event: "engineering.vps.change.safe",
-        mode: "EXECUTE",
-        action: CHANGE_SAFE_ACTION,
-        targetKey: assessment.targetKey,
-        status: partial.status,
-        executed: partial.executed,
-        mutationAttempted: partial.mutation.attempted,
-        mutationAccepted: partial.mutation.accepted,
-        correlationKey: assessment.proposalFingerprint,
-        durationMs,
-      }),
-    );
-    // Keys are inserted in sorted order for deterministic serialized output.
-    return {
-      action: CHANGE_SAFE_ACTION,
-      executed: partial.executed,
-      limitations: CHANGE_SAFE_LIMITATIONS,
-      mutation: partial.mutation,
-      postValidation: partial.postValidation,
-      prechecks: assessment.prechecks,
-      proposalFingerprint: assessment.proposalFingerprint,
-      reason: partial.reason,
-      risk: "REQUIRES_APPROVAL",
-      rollback: { available: false, performed: false },
-      status: partial.status,
-      target: planTarget(assessment.resolved, assessment.targetKey),
-    };
-  };
+  }): ChangeSafeExecuteResult => finishExecuteResult(assessment, startedAt, partial);
 
   // Gate 1 - approval binding. An absent or not-granted approval NEVER mutates
   // and never creates authority (authority stays with the operator allowlist).
