@@ -117,4 +117,9 @@ npm test
 npm start        # MCP stdio server
 ```
 
-Explore Guardian Core: <https://github.com/AndersonVitaease/memoryos-guardian-core>
+## Guardian ecosystem
+
+- [Guardian Core](https://github.com/AndersonVitaease/memoryos-guardian-core) — domain-agnostic Safe Execution Core (bind → gate → apply, fail-closed).
+- [GitHub Guardian](https://github.com/AndersonVitaease/memoryos-github-guardian-proof) — state-bound PR merge execution using GitHub's native SHA precondition and independent post-merge verification.
+- [Filesystem Guardian](https://github.com/AndersonVitaease/memoryos-filesystem-guardian-proof) — stale-state-safe file changes with bounded filesystem authority and read-back verification.
+- [Email Guardian](https://github.com/AndersonVitaease/memoryos-email-guardian-proof) — bounded outbound email execution with stale-state protection, same-instance keyed duplicate suppression and evidence-based outcomes.
