@@ -2,7 +2,7 @@
   "name": "memoryos-vps-guardian-pro",
   "version": "0.1.0",
   "private": true,
-  "description": "PRIVATE commercial extension of MemoryOS VPS Guardian: reuses the 10 free public Simple Tools and adds the proprietary Supertool engineering.vps.doctor. Not open source; never published.",
+  "description": "Proprietary commercial extension of MemoryOS VPS Guardian: reuses the 10 free public Simple Tools and adds the proprietary Supertool engineering.vps.doctor. Publicly visible for evaluation and technical review; all rights reserved. Not open source; public visibility does not grant redistribution rights.",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
